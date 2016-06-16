@@ -1,0 +1,12 @@
+<?jelly escape-by-default='true'?>
+<j:jelly xmlns:j="jelly:core" xmlns:f="/lib/form">
+   <f:entry title="${%Build tag name}" field="tagName">
+      <f:textbox/>
+   </f:entry>
+   <f:entry title="${%Build location}" field="buildLocation">
+         <f:textbox/>
+   </f:entry>
+   <f:entry title="${%Fix token}" field="fixToken">
+      <f:textbox/>
+   </f:entry>
+</j:jelly>
