@@ -1,0 +1,57 @@
+Доработанный плагин для Jenkins (основан на http://wiki.jenkins-ci.org/display/JENKINS/JIRA+Plugin).
+
+Расширяет функционал JIRA Plugin.
+При сборке проверяет сообщения коммитов в Git на наличие ключа задачи в Jira (MODELWIZARD-XXXX) и информации для неё:
+1) наличие специального токена (Fix token),
+2) наличие потраченного на задачу времени в формате "(1w 2d 3h 4m)" !!! ОБЯЗАТЕЛЬНО В СКОБОЧКАХ
+
+При наличии только ключа просто добавляет комментарий из Git.
+При наличии ключа с токеном резолвит задачу с комментом. При этом номер билда берется из переменной окружения с именем, которое вводится в поле "Tag name".
+При наличии потраченного времени делает work log с комментом.
+
+Задачи компонуются по наличию комментария, например:
+! *MODELWIZARD-1 MODELWIZARD-2(1w 1d 1h 1m) Текст сообщения 1 + MODELWIZARD-3(1d) Текст сообщения 2
+- *MODELWIZARD-4(1d 1h) Текст сообщения 3
+
+MODELWIZARD-1 будет зарезолвлена с сообщением "Текст сообщения 1"
+MODELWIZARD-2 будет добавлен work log 1w 1d 1h 1m с сообщением "Текст сообщения 1"
+MODELWIZARD-3 будет добавлен work log 1d с сообщением "Текст сообщения 2"
+MODELWIZARD-4 будет зарезолвлена с сообщением "Текст сообщения 3" и добавлен work log 1d 1h
+
+Символы характера коммита (+-!+~) проигнорируются.
+
+Полная инструкция по сборке и дебагу: http://wiki.jenkins-ci.org/display/JENKINS/Plugin+tutorial
+
+Сборка и настройка:
+1. Поставить JDK и Maven (добавить переменную окружения JAVA_HOME и в Path добавить пути к бинарникам)
+   http://www.oracle.com/technetwork/java/javase/downloads/index.html
+   http://maven.apache.org/download.cgi
+2. Копируем settings.xml в %USERPROFILE%\.m2\
+3. В коммандной строке: mvn install
+4. Установить JIRA Plugin: http://wiki.jenkins-ci.org/display/JENKINS/JIRA+Plugin
+5. В Jenkins: Настройки - Управлении плагинами - Дополнительно - Загрузить плагин
+   Выбрать .hpi-файл (находится в папке target).
+6. В конфигурации Jenkins в блоке JIRA
+   URL: http://jira.transas.com/
+   User Name: dv_bot
+   Password: transasbot1
+7. Добавить послесборочную операцию "Extended update relevant JIRA issues" в настройках проекта:
+   Tag name: $TAG_NAME
+   Fix token: *
+8. Для того, чтобы обновление задач делалось от имени автора коммита,
+   всем, кто хочет пользоваться этой функциональностью нужно добавить логин и пароль для входа в Jira
+   в Credentials -> Global credentials
+   
+
+Дебаг:
+1. Поставить Eclipse
+2. В коммандной строке переключиться на папку плагина:
+mvn -DdownloadSources=true -DdownloadJavadocs=true -DoutputDirectory=target/eclipse-classes -Declipse.workspace="ТУТ ПУТЬ ДО РАБОЧЕГО КАТАЛОГА ЭКЛИПСА" eclipse:eclipse eclipse:add-maven-repo
+
+Создастся проект и скачаются нужные для него зависимости.
+3. В Eclipse импортим проект (ОБЯЗАТЕЛЬНО ТАК): Import... - General > Existing Projects into Workspace
+4. В коммандной строке: mvndebug hpi:run -Djetty.port=XXXX,
+XXXX - порт, на котором будет развернут Jenkins для текущего плагина.
+При mvndebug Jenkins будет ждать на 8000 порту подключения.
+5. Аттачим Eclipse: Run - Debug configurations... - Remote Java Application
+Создать новый Connect. Все настройки стандартные кроме имени и флага Allow termination of remote VM (д.б включен)

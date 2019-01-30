@@ -1,6 +1,9 @@
 target/
 work/
+.idea/
 .settings/
 
 .project
 .classpath
+
+jira-issue-updater.iml

@@ -1,11 +1,9 @@
-package com.transas.jenkins.plugins.jiraissueupdater;
+package com.transas.jenkins.plugin.jiraissueupdater;
 
 import hudson.plugins.jira.JiraSite;
 
-public class UpdaterSttings {
-
-   public String jenkinsRootUrl;
-
+public class UpdaterSttings
+{
    public String groupVisibility;
    public String roleVisibility;
 
@@ -15,13 +13,11 @@ public class UpdaterSttings {
    public String buildLocation;
 
    public String dateTimePattern;
-   public String fixPattern;
 
-   public void addSttings(String jenkinsRootUrl, JiraSite site) {
-      this.jenkinsRootUrl = jenkinsRootUrl;
-
+   public void addSttings(JiraSite site)
+   {
       this.groupVisibility = site.groupVisibility;
-      this.roleVisibility  = site.roleVisibility;
+      this.roleVisibility = site.roleVisibility;
       this.dateTimePattern = site.getDateTimePattern();
    }
 }
