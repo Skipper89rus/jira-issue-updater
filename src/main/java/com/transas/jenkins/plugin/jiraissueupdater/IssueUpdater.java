@@ -3,7 +3,11 @@ package com.transas.jenkins.plugin.jiraissueupdater;
 import java.io.PrintStream;
 import java.net.URI;
 import java.net.URISyntaxException;
+import java.util.List;
+import java.util.Map;
 
+import com.atlassian.jira.rest.client.api.domain.Permission;
+import com.atlassian.jira.rest.client.api.domain.Transition;
 import org.apache.commons.lang.StringUtils;
 
 import com.atlassian.jira.rest.client.api.JiraRestClient;
@@ -17,7 +21,6 @@ import com.cloudbees.plugins.credentials.domains.URIRequirementBuilder;
 import hudson.model.Job;
 import hudson.plugins.jira.JiraSite;
 import hudson.security.ACL;
-import hudson.util.Secret;
 import org.apache.http.HttpStatus;
 
 public class IssueUpdater
@@ -44,7 +47,7 @@ public class IssueUpdater
       this.commentConstructor = new CommentConstructor(settings);
 
       // Будет использован, если не получиться залогиниться от автора коммита
-      this.defaultService = createJiraRestService(site.credentials.getUsername(), site.credentials.getPassword());
+      this.defaultService = createJiraRestService(site.credentials.getUsername());
    }
 
    /**
@@ -52,12 +55,12 @@ public class IssueUpdater
     *
     * @return null if remote access is not supported.
     */
-   private JiraRestServiceEx createJiraRestService(String userName, Secret password)
+   private JiraRestServiceEx createJiraRestService(String userId)
    {
       if (site == null)
          return null;
 
-      if (StringUtils.isBlank(userName) || StringUtils.isBlank(password.getPlainText()))
+      if (StringUtils.isBlank(userId))
          return null;
 
       final URI uri;
@@ -67,160 +70,205 @@ public class IssueUpdater
       }
       catch (URISyntaxException e)
       {
-         throw new RuntimeException("Failed to create JiraRestService due to convert URI error");
+         logger.println(String.format("Failed to convert URI error! Exception: %1$s", e.getLocalizedMessage()));
+         return null;
       }
 
-      JiraRestClient jiraRestClient = new AsynchronousJiraRestClientFactory().createWithBasicHttpAuthentication(uri, userName, password.getPlainText());
-      return new JiraRestServiceEx(uri, jiraRestClient, userName, password.getPlainText(), JiraSite.DEFAULT_TIMEOUT);
-   }
-
-   /**
-    * Creates a remote rest access to this JIRA using user login and password.
-    *
-    * @return null if remote access is not supported.
-    */
-   private JiraRestServiceEx createJiraRestService(String userId)
-   {
       try
       {
-         UsernamePasswordCredentials credentials = CredentialsMatchers.firstOrNull(
-               CredentialsProvider.lookupCredentials(UsernamePasswordCredentials.class, project, ACL.SYSTEM,
-                     URIRequirementBuilder.fromUri(site.url.toString()).build()),
-               CredentialsMatchers.withUsername(userId));
+         UsernamePasswordCredentials credentials = CredentialsMatchers.firstOrNull(CredentialsProvider.lookupCredentials(UsernamePasswordCredentials.class, project, ACL.SYSTEM, URIRequirementBuilder.fromUri(site.url.toString()).build()), CredentialsMatchers.withUsername(userId));
 
-         return createJiraRestService(credentials.getUsername(), credentials.getPassword());
+         JiraRestClient jiraRestClient = new AsynchronousJiraRestClientFactory().createWithBasicHttpAuthentication(uri, credentials.getUsername(), credentials.getPassword().getPlainText());
+         return new JiraRestServiceEx(uri, jiraRestClient, credentials.getUsername(), credentials.getPassword().getPlainText(), JiraSite.DEFAULT_TIMEOUT);
       }
       catch (NullPointerException e)
       {
+         logger.println(String.format("Failed to create rest service! Exception: %1$s", e.getLocalizedMessage()));
          return null;
       }
    }
 
-   private JiraRestServiceEx getService(String userId)
+   private String getActionStr(UpdateAction action)
    {
-      JiraRestServiceEx service = createJiraRestService(userId);
-      if (service != null)
-         return service;
+      switch (action)
+      {
+         case UA_COMMENT:
+            return "comment";
+         case UA_RESOLVE:
+            return "resolve";
+         case UA_LOG_WORK:
+            return "add log work";
+      }
+      return "";
+   }
 
-      logger.println("Login from the commit author failed. Will be used default user.");
-      return defaultService;
+   public String getPermissionKey(UpdateAction action)
+   {
+      switch (action)
+      {
+         case UA_COMMENT:
+            return "ADD_COMMENTS";
+         case UA_RESOLVE:
+            return "RESOLVE_ISSUES";
+         case UA_LOG_WORK:
+            return "EDIT_OWN_WORKLOGS";
+      }
+      return "";
+   }
+
+      private JiraRestServiceEx getService(IssueEx issue)
+   {
+      JiraRestServiceEx service = createJiraRestService(issue.authorId);
+      try
+      {
+         if (!service.getMyPermissions().havePermission(getPermissionKey(issue.action)))
+         {
+            logger.println(String.format("User '%1$s' hasn't permission to %2$s on issue %3$s", issue.authorId, getActionStr(issue.action), issue.id));
+            return null;
+         }
+      }
+      catch (RestClientException e)
+      {
+         String logMsg = String.format("Failed to update issue %1$s! Exception: %2$s", issue.id, e.getLocalizedMessage());
+         if (e.getStatusCode().isPresent())
+         {
+            switch (e.getStatusCode().get())
+            {
+               case HttpStatus.SC_NOT_FOUND:
+                  logMsg = String.format("Issue '%1$s' not found!", issue.id);
+                  break;
+               case HttpStatus.SC_FORBIDDEN:
+                  logMsg = String.format("User '%1$s' hasn't permission to %2$s on issue %3$s", issue.authorId, getActionStr(issue.action), issue.id);
+                  break;
+               case HttpStatus.SC_UNAUTHORIZED:
+                  logMsg = String.format("Failed to login as '%1$s'! Check '%1$s' password on Credentials page", issue.authorId);
+                  break;
+            }
+         }
+         logger.println(logMsg);
+         return null;
+      }
+      catch (NullPointerException e)
+      {
+         logger.println(String.format("Failed to update issue %1$s! Exception: %2$s", issue.id, e.getLocalizedMessage()));
+         return null;
+      }
+      return service;
    }
 
    public boolean updateIssue(IssueEx issue)
    {
       logger.println("Updating " + issue.id);
-
-      try
+      switch (issue.action)
       {
-         switch (issue.action)
-         {
-            case UA_COMMENT:
-               comment(issue);
-               break;
-            case UA_RESOLVE:
-               resolve(issue);
-               break;
-            case UA_LOG_WORK:
-               logWork(issue);
-               break;
-         }
+         case UA_COMMENT:
+            return comment(issue);
+         case UA_RESOLVE:
+            return resolve(issue);
+         case UA_LOG_WORK:
+            return logWork(issue);
       }
-      catch (RestClientException e)
-      {
-         if (e.getStatusCode().isPresent() && e.getStatusCode().get() == HttpStatus.SC_NOT_FOUND)
-            logger.println(issue.id + " - JIRA issue not found. Dropping comment from update queue.");
-
-         if (e.getStatusCode().isPresent() && e.getStatusCode().get() == HttpStatus.SC_FORBIDDEN)
-         {
-            logger.println(issue.id + " - Jenkins JIRA user does not have permissions to comment on this issue. Preserving comment for future update.");
-            return false;
-         }
-
-         if (e.getStatusCode().isPresent() && e.getStatusCode().get() == HttpStatus.SC_UNAUTHORIZED)
-         {
-            logger.println(issue.id + " - Jenkins JIRA authentication problem. Preserving comment for future update.");
-            return false;
-         }
-
-         logger.println(String.format("Commenting failed on %1$s. Carrying over to next build.", issue.id));
-         logger.println(e.getLocalizedMessage());
-      }
-
-      return true;
+      return false;
    }
 
    /**
     * Comment given issue.
     */
-   public void comment(IssueEx issue)
+   public boolean comment(IssueEx issue)
    {
-      JiraRestServiceEx service = getService(issue.authorId);
-
-      issue.author = service.getUser(issue.authorId);
-      String comment = commentConstructor.createFullComment(issue, true);
-      service.addComment(issue.id, comment, settings.groupVisibility, settings.roleVisibility);
-      logger.println(String.format("Comment for issue %1$s added: %2$s", issue.id, comment));
+      JiraRestServiceEx service = getService(issue);
+      if (service == null)
+      {
+         logger.println("Issue will be processed from default user!");
+         service = defaultService;
+      }
+      return commentSimple(service, issue);
    }
 
    /**
     * Resolve given issue.
     */
-   public void resolve(IssueEx issue)
+   public boolean resolve(IssueEx issue)
    {
-      if (issue.timeSpent > 0)
+      JiraRestServiceEx service = getService(issue);
+      // Если есть timeSpent, то сначала делаем ворклог
+      // Делать ворклог можно только если получилось залогиниться
+      boolean logWorkAdded = false;
+      if (service != null && issue.timeSpent > 0)
       {
-         // Если есть timeSpent, то сначала делаем ворклог
          logger.println(String.format("Work log will be added to resolving issue " + issue.id));
-         logWork(issue);
+         logWorkAdded = logWorkSimple(service, issue);
       }
 
-      JiraRestServiceEx service = getService(issue.authorId);
-      if (service.isIssueResolved(issue.id))
+      if (service == null)
       {
-         // Просто комментим
+         logger.println("Issue will be processed from default user!");
+         service = defaultService;
+      }
+
+      // Если задача уже зарезолвлена и мы не добавили комментарий через ворклог, то комментим
+      if (service.isIssueResolved(issue.id) && !logWorkAdded)
+      {
          logger.println(String.format("Issue %1$s already resolved. It will be commented.", issue.id));
-         comment(issue);
+         return commentSimple(service, issue);
       }
-      else
-      {
-         // Резолвим на репортера
-         String reporter = service.getIssue(issue.id).getReporter().getName();
-
-         issue.author = service.getUser(issue.authorId);
-         String comment = commentConstructor.createChangeComment(issue, true);
-         if (service.fixIssue(issue, comment, settings.buildNum, reporter))
-            logger.println(issue.id + " resolved with comment: " + comment);
-         else
-            logger.println(issue.id + " can not be resolved.");
-      }
+      return resolveSimple(service, issue);
    }
 
    /**
     * Adds log work for given issue.
     */
-   public void logWork(IssueEx issue)
+   public boolean logWork(IssueEx issue)
    {
-      if (StringUtils.isBlank(issue.authorId) || issue.timeSpent <= 0)
-      {
-         logger.println("Work log can not be added to " + issue.id + " because commit time spent is empty. Issue will be commented.");
-         comment(issue);
-         return;
-      }
-
-      // Если не получается залогиниться от автора коммита, то смысла делать ворклог нет
-      JiraRestServiceEx service = createJiraRestService(issue.authorId);
+      JiraRestServiceEx service = getService(issue);
       if (service == null)
       {
-         logger.println(String.format("Work log can not be added to %1$s because login from the commit author failed. Issue will be commented.", issue.id));
-         comment(issue);
-         return;
+         logger.println("Work log can't be added to " + issue.id + ". Issue will be commented.");
+         return commentSimple(defaultService, issue);
       }
 
+      if (issue.timeSpent <= 0)
+      {
+         logger.println("Work log can't be added to " + issue.id + " because commit time spent is empty. Issue will be commented.");
+         return commentSimple(service, issue);
+      }
+
+      return logWorkSimple(service, issue);
+   }
+
+   public boolean commentSimple(JiraRestServiceEx service, IssueEx issue)
+   {
+      issue.author = service.getUser(issue.authorId);
+      String comment = commentConstructor.createFullComment(issue, true);
+      service.addComment(issue.id, comment, settings.groupVisibility, settings.roleVisibility);
+      logger.println(String.format("Comment for issue %1$s added: %2$s", issue.id, comment));
+      return true;
+   }
+
+   public boolean resolveSimple(JiraRestServiceEx service, IssueEx issue)
+   {
+      // Резолвим на репортера
+      String reporter = service.getIssue(issue.id).getReporter().getName();
+
+      issue.author = service.getUser(issue.authorId);
+      String comment = commentConstructor.createChangeComment(issue, true);
+      boolean res = service.fixIssue(issue, comment, settings.buildNum, reporter);
+      if (res)
+         logger.println(issue.id + " resolved with comment: " + comment);
+      else
+         logger.println(issue.id + " can't be resolved.");
+      return res;
+   }
+
+   public boolean logWorkSimple(JiraRestServiceEx service, IssueEx issue)
+   {
       issue.author = service.getUser(issue.authorId);
       String comment = commentConstructor.createChangeComment(issue, false);
-      if (service.addWorklog(issue, comment))
+      boolean res = service.addWorklog(issue, comment);
+      if (res)
          logger.println("Work log added to " + issue.id + " with comment: " + comment);
       else
-         logger.println("Work log can not be added to " + issue.id);
+         logger.println("Work log can't be added to " + issue.id);
+      return res;
    }
 }
